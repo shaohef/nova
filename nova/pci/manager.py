@@ -62,6 +62,7 @@ class PciDevTracker(object):
         super(PciDevTracker, self).__init__()
         self.stale = {}
         self.node_id = node_id
+        # need to update pci whitelist.Whitelist
         self.dev_filter = whitelist.Whitelist(CONF.pci.passthrough_whitelist)
         self.stats = stats.PciDeviceStats(dev_filter=self.dev_filter)
         self._context = context

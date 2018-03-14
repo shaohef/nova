@@ -854,11 +854,13 @@ class SchedulerReportClient(object):
         # Check to see if we need to update placement's view
         if not self._provider_tree.has_inventory_changed(rp_uuid, inv_data):
             return True
-
-        payload = {
-            'resource_provider_generation': cur_gen,
-            'inventories': inv_data,
-        }
+        import pdb; pdb.set_trace()
+        curr.setdefault("inventories", {}).update(inv_data)
+        # payload = {
+        #     'resource_provider_generation': cur_gen,
+        #     'inventories': inv_data,
+        # }
+        payload = curr
         url = '/resource_providers/%s/inventories' % rp_uuid
         result = self.put(url, payload, global_request_id=context.global_id)
         if result.status_code == 409:

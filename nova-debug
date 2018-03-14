@@ -1,0 +1,18 @@
+sudo systemctl stop devstack@n-cpu.service
+/usr/bin/python /usr/local/bin/nova-compute --config-file /etc/nova/nova-cpu.conf
+
+HOSTNAME=`hostname`
+sudo echo "" >> /etc/nova/nova-cpu.conf
+sudo echo "[cyborg]" >> /etc/nova/nova-cpu.conf
+sudo echo "url = http://$HOSTNAME:6666" >> /etc/nova/nova-cpu.conf
+echo "use this command to start nova-compute"
+echo "/usr/bin/python /usr/local/bin/nova-compute --config-file /etc/nova/nova-cpu.conf"
+
+# upload an image:
+# openstack image create --file bitstream0 --property vendor=intel --property type=crypto --tag INTEL --tag FPGA fpga-bitstream0
+
+# create a flavor by this command:
+# openstack flavor set --property "resources1:CUSTOM_FPGA_INTEL_VF"=1 --property "trait1:CUSTOM_CYBORG_CRYPTO"=required c1
+
+# boot a instance:
+# openstack server create --flavor c1 --image cirros-0.3.5-x86_64-disk test

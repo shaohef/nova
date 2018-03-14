@@ -154,6 +154,9 @@ class Claim(NopClaim):
         reasons = [self._test_memory(resources, memory_mb_limit),
                    self._test_disk(resources, disk_gb_limit),
                    self._test_vcpus(resources, vcpus_limit),
+                   # fix me, log as follow:
+                   # Require both a host and instance NUMA topology to fit instance on host.
+                   # numa_fit_instance_to_host /opt/stack/nova/nova/virt/hardware.py:1453
                    self._test_numa_topology(resources, numa_topology_limit),
                    self._test_pci()]
         reasons = [r for r in reasons if r is not None]

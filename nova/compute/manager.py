@@ -494,6 +494,14 @@ class ComputeManager(manager.Manager):
 
     def __init__(self, compute_driver=None, *args, **kwargs):
         """Load configuration options and connect to the hypervisor."""
+        # from nova.clients.token import token
+        # from nova.clients.cyborg import cyborg
+        # tok, data = token.get_token()
+        # cy = CONF.get("cyborg")
+        # url = cy.get("url")
+        # import pdb; pdb.set_trace()
+        # r = cyborg.claim_fpgas(tok, url=url)
+        # print r
         self.virtapi = ComputeVirtAPI(self)
         self.network_api = network.API()
         self.volume_api = cinder.API()
@@ -4942,6 +4950,7 @@ class ComputeManager(manager.Manager):
         self.network_api.setup_instance_network_on_host(context, instance,
                                                         self.host)
         network_info = self.network_api.get_instance_nw_info(context, instance)
+        # import pdb; pdb.set_trace()
         try:
             with rt.instance_claim(context, instance, node, limits):
                 self.driver.spawn(context, instance, image_meta,

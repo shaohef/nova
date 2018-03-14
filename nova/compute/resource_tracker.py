@@ -20,6 +20,7 @@ model.
 """
 import collections
 import copy
+import re
 
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
@@ -50,6 +51,9 @@ CONF = nova.conf.CONF
 LOG = logging.getLogger(__name__)
 COMPUTE_RESOURCE_SEMAPHORE = "compute_resources"
 
+XS_RES_PREFIX = 'resources'
+XS_TRAIT_PREFIX = 'trait'
+XS_KEYPAT = re.compile(r"^(%s)([1-9][0-9]*)?:(.*)$" % '|'.join((XS_RES_PREFIX, XS_TRAIT_PREFIX)))
 
 def _instance_in_resize_state(instance):
     """Returns True if the instance is in one of the resizing states.
@@ -208,8 +212,80 @@ class ResourceTracker(object):
                               'overhead': overhead.get('vcpus', 0)})
 
         cn = self.compute_nodes[nodename]
+
+        cyborg_resources = {
+            "instance_uuid": instance.uuid,
+            "host": nodename,
+        }
+        vendor_map = {"0x8086": "INTEL"}
+        """
+        {
+            "resources1:CUSTOM_FPGA_INTEL_VF": "1",
+            "resources:CUSTOM_FPGA_INTEL_PF": "1",
+            "trait1:CUSTOM_CYBORG_FPGA": "required",
+            "trait1:CUSTOM_CYBORG_INTEL": "required",
+            "trait1:CUSTOM_CYBORG_CRYPTO": "required"}
+        """
+        # import pdb; pdb.set_trace()
+        for res, val in instance.flavor['extra_specs'].items():
+            m = XS_KEYPAT.match(res)
+            if not m:
+                continue
+            k, group, v = m.groups()
+            if not (v.startswith("CUSTOM_FPGA_") or v.startswith("CUSTOM_QAT_")
+                or v.startswith("CUSTOM_CYBORG_")):
+                continue
+            cyborg_resources[res] = val
+        hack_requests = {}
+        hack_pci_requests = []
+        if len(cyborg_resources) > 2:
+            from nova.clients.token import token
+            from nova.clients.cyborg import cyborg
+            tok, data = token.get_token()
+            cy = CONF.get("cyborg")
+            url = cy.get("url")
+            # import pdb; pdb.set_trace()
+            r = cyborg.claim_fpgas(tok, cyborg_resources, url=url)
+            requests = {}
+            if r and r.get("deployables"):
+                for i in r["deployables"]:
+                    if not i.get("pcie_address"):
+                        continue
+                    vendor = vendor_map.get(i["vendor"])
+                    if not vendor:
+                        continue
+                    # tpy = "PF" if i["type"] = "pf" else ""
+                    # tpy = "VF" if i["type"] = "vf" else tpy
+                    # key = "_".join(["CUSTOM_FPGA", vendor, typ])
+                    # pcis = hack_requests.setdefault(key, [])
+                    # pcis.append(i)
+                    vendor = i["vendor"][2:]
+                    product_id = i["board"][2:]
+                    dev_type = fields.PciDeviceType.SRIOV_PF if i["type"] == "pf" else ""
+                    dev_type = fields.PciDeviceType.SRIOV_VF if i["type"] == "vf" else dev_type
+                    alias = i["name"].rsplit(".", 1)[0]
+                    k = "_".join([vendor, product_id, dev_type, alias])
+                    req = requests.setdefault(
+                        k, {"count": 0,
+                            "spec": [{'vendor_id': vendor,
+                                      'product_id': product_id,
+                                      'dev_type': dev_type}],
+                             "alias_name": alias})
+                    req["count"] = req["count"] + 1
+            if requests:
+                for k, v in requests.items():
+                    request = objects.InstancePCIRequest(**v)
+                        # count=v["count"],
+                        # spec=[{'vendor_id': vendor, 'product_id': product_id, 'dev_type': dev_type}],
+                        # alias_name=i["name"])
+                    hack_pci_requests.append(request)
+
         pci_requests = objects.InstancePCIRequests.get_by_instance_uuid(
             context, instance.uuid)
+        pci_requests = objects.InstancePCIRequests(
+            instance_uuid=instance.uuid,
+            requests=pci_requests.requests + hack_pci_requests)
+
         claim = claims.Claim(context, instance, nodename, self, cn,
                              pci_requests, overhead=overhead, limits=limits)
 
