@@ -238,6 +238,7 @@ class ResourceTracker(object):
             cyborg_resources[res] = val
         hack_requests = {}
         hack_pci_requests = []
+        pci_devices = []
         if len(cyborg_resources) > 2:
             from nova.clients.token import token
             from nova.clients.cyborg import cyborg
@@ -245,6 +246,10 @@ class ResourceTracker(object):
             cy = CONF.get("cyborg")
             url = cy.get("url")
             # import pdb; pdb.set_trace()
+            # same with PciDevTracker._claim_instance(
+            #    self, context, pci_requests, instance_numa_topology)
+            # need to check where PciDevTracker._allocate_instance(
+            #    self, instance, devs)
             r = cyborg.claim_fpgas(tok, cyborg_resources, url=url)
             requests = {}
             if r and r.get("deployables"):
@@ -261,7 +266,7 @@ class ResourceTracker(object):
                     # pcis.append(i)
                     vendor = i["vendor"][2:]
                     product_id = i["board"][2:]
-                    dev_type = fields.PciDeviceType.SRIOV_PF if i["type"] == "pf" else ""
+                    dev_type = fields.PciDeviceType.SRIOV_PF if i["type"] == "pf" else fields.PciDeviceType.STANDARD
                     dev_type = fields.PciDeviceType.SRIOV_VF if i["type"] == "vf" else dev_type
                     alias = i["name"].rsplit(".", 1)[0]
                     k = "_".join([vendor, product_id, dev_type, alias])
@@ -272,6 +277,19 @@ class ResourceTracker(object):
                                       'dev_type': dev_type}],
                              "alias_name": alias})
                     req["count"] = req["count"] + 1
+                    device = {
+                        "dev_id": i["name"],
+                        "address": i["pcie_address"],
+                        "product_id": product_id,
+                        "vendor_id": vendor,
+                        "label": "label_%s_%s" % (vendor, product_id),
+                        "numa_node": None,  # not support at present.
+                        "dev_type": dev_type
+                        }
+                    pci_devices.append(device)
+                    # not support at present
+                    # if i.get("parent_uuid"):
+                    #     device["parent_addr"] = ""
             if requests:
                 for k, v in requests.items():
                     request = objects.InstancePCIRequest(**v)
@@ -279,12 +297,25 @@ class ResourceTracker(object):
                         # spec=[{'vendor_id': vendor, 'product_id': product_id, 'dev_type': dev_type}],
                         # alias_name=i["name"])
                     hack_pci_requests.append(request)
+            # copy from PciDevTracker._set_hvdevs
+            for dev in pci_devices:
+                dev['compute_node_id'] = cn.uuid
+                dev_obj = objects.PciDevice.create(self._context, dev)
+                # self.pci_devs.objects.append(dev_obj)
+                # self.stats.add_device(dev_obj)
+                dev_obj.claim(instance.uuid)
+                if self.pci_tracker:
+                    self.pci_tracker.claims[instance.uuid] += dev_obj
+                # NOTE(jaypipes): update_available_resource() periodic call will find the instance
+                # in its list of known instances and will call
+                # self.pci_tracker.update_pci_for_instance to update the dev_obj
 
         pci_requests = objects.InstancePCIRequests.get_by_instance_uuid(
             context, instance.uuid)
-        pci_requests = objects.InstancePCIRequests(
-            instance_uuid=instance.uuid,
-            requests=pci_requests.requests + hack_pci_requests)
+        # pci_requests = objects.InstancePCIRequests(
+        #     instance_uuid=instance.uuid,
+        #     requests=pci_requests.requests + hack_pci_requests)
+
 
         claim = claims.Claim(context, instance, nodename, self, cn,
                              pci_requests, overhead=overhead, limits=limits)
