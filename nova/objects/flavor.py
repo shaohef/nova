@@ -226,6 +226,10 @@ class Flavor(base.NovaPersistentObject, base.NovaObject,
         self._orig_extra_specs = {}
         self._orig_projects = []
 
+    @property
+    def device_profile_name(self):
+        return self.extra_specs.get('accel:device_profile')
+
     def obj_make_compatible(self, primitive, target_version):
         super(Flavor, self).obj_make_compatible(primitive, target_version)
         target_version = versionutils.convert_version_to_tuple(target_version)

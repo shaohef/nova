@@ -26,6 +26,7 @@ from nova import objects
 from nova.objects import base
 from nova.objects import fields
 from nova.objects import instance as obj_instance
+from nova.scheduler import utils as schedutils
 from nova.virt import hardware
 
 LOG = logging.getLogger(__name__)
@@ -485,6 +486,14 @@ class RequestSpec(base.NovaObject):
         spec_obj.requested_resources = []
         if port_resource_requests:
             spec_obj.requested_resources.extend(port_resource_requests)
+
+        # If there is no device profile name in the flavor, the call
+        # to get_request_groups_for_device_profile() returns [], so
+        # this becomes a nop.
+        device_profile_request_groups = (
+            schedutils.ResourceRequest.get_request_groups_for_device_profile(
+                spec_obj.flavor.device_profile_name))
+        spec_obj.requested_resources.extend(device_profile_request_groups)
 
         # NOTE(sbauza): Default the other fields that are not part of the
         # original contract
