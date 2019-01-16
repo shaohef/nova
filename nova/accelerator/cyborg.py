@@ -12,8 +12,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 from oslo_log import log as logging
+from oslo_serialization import jsonutils
 
 from nova import utils
+
+import retrying
 
 """
    Note on object relationships:
@@ -166,3 +169,38 @@ class _CyborgClient(object):
         r = self._client.patch(url, json=patch_list)
         if not r:
             raise RuntimeError('Failed to bind Cyborg accelerator requests')
+
+    @retrying.retry(stop_max_attempt_number=10,
+                    retry_on_exception=lambda e: isinstance(
+                        e, RuntimeError))
+    def get_resolved_arqs_for_instance(self, instance_uuid):
+        """Get ARQs for the instance after Cyborg binding,
+           polling as needed till each ARQ has bound successfully
+           or failed to bind.
+
+           :param instance_uuid: Instance UUID
+           :returns: [arq] where each ARQ is in state Bound or BindFailed
+        """
+        url = self.ARQ_URL
+        query = {"instance": instance_uuid,
+                 "bind_state": "resolved"
+                }
+
+        VALID_STATES = ['Bound', 'BindFailed']
+
+        r = self._client.get(url, params=query).json()
+        if not r:
+            raise RuntimeError('Failed to get Cyborg accelerator requests')
+
+        arqs = r['arqs']
+        if not all(arq['state'] in VALID_STATES for arq in arqs):
+            raise RuntimeError('Some accelerator requests are not resolved')
+
+        # All ARQs are resolved at this point.
+        # Convert attach_info JSON to a dictonary.
+        for arq in arqs:
+            attach_json = arq['attach_handle_info']
+            attach_dict = jsonutils.loads(attach_json)
+            arq['attach_handle_info'] = attach_dict
+
+        return arqs
