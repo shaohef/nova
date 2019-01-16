@@ -24,6 +24,7 @@ from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from six.moves.urllib import parse
 
+from nova.accelerator import cyborg
 from nova.compute import flavors
 from nova.compute import utils as compute_utils
 import nova.conf
@@ -85,6 +86,7 @@ class ResourceRequest(object):
         group_idents = [0] + [int(ident) for ident in self._rg_by_id if ident]
         ident = max(group_idents) + 1
         self._rg_by_id[ident] = request_group
+        return ident
 
     def _add_resource(self, groupid, rclass, amount):
         # Validate the class.
@@ -133,6 +135,30 @@ class ResourceRequest(object):
         self._group_policy = policy
 
     @classmethod
+    def _match_and_add_from_extra_specs(cls, rr, key, val, rg_ident=None):
+        match = cls.XS_KEYPAT.match(key)
+        if not match:
+            return
+
+        # 'prefix' is 'resources' or 'trait'
+        # 'suffix' is $N or None
+        # 'name' is either the resource class name or the trait name.
+        prefix, suffix, name = match.groups()
+
+        # If rg_ident is provided, use that instead of suffix
+        # rg_ident is provided for device profile RGs, not other extra specs
+        if rg_ident:
+            suffix = rg_ident
+
+        # Process "resources[$N]"
+        if prefix == cls.XS_RES_PREFIX:
+            rr._add_resource(suffix, name, val)
+
+        # Process "trait[$N]"
+        elif prefix == cls.XS_TRAIT_PREFIX:
+            rr._add_trait(suffix, name, val)
+
+    @classmethod
     def from_extra_specs(cls, extra_specs, req=None):
         """Processes resources and traits in numbered groupings in extra_specs.
 
@@ -153,34 +179,51 @@ class ResourceRequest(object):
         # TODO(efried): Handle member_of[$N], which will need to be reconciled
         # with destination.aggregates handling in resources_from_request_spec
 
-        if req is not None:
-            ret = req
-        else:
-            ret = cls()
+        ret = req or cls()
 
         for key, val in extra_specs.items():
             if key == 'group_policy':
                 ret._add_group_policy(val)
                 continue
-
-            match = cls.XS_KEYPAT.match(key)
-            if not match:
-                continue
-
-            # 'prefix' is 'resources' or 'trait'
-            # 'suffix' is $N or None
-            # 'name' is either the resource class name or the trait name.
-            prefix, suffix, name = match.groups()
-
-            # Process "resources[$N]"
-            if prefix == cls.XS_RES_PREFIX:
-                ret._add_resource(suffix, name, val)
-
-            # Process "trait[$N]"
-            elif prefix == cls.XS_TRAIT_PREFIX:
-                ret._add_trait(suffix, name, val)
+            cls._match_and_add_from_extra_specs(ret, key, val)
 
         return ret
+
+    @classmethod
+    def get_request_groups_for_device_profile(cls, dp_name):
+        """Create all RGs for the list of device profile groups.
+
+        Parse the resources/traits and validate them using the same logic
+        as from_extra_specs. Each created RG has its requester_id field
+        filled with the device profle group id, which is used to match
+        ARQs to RGs in conductor/manager.py::create_and_bind_arqs().
+
+        See module comments in accelerator/cyborg for the relationship
+        between device profiles, RGs, etc.
+
+        :param dp_name: Device profile name (from the flavor).
+        :returns: List of RGs, one for each device profile group.
+        """
+        if dp_name is None:
+            # Extra specs may not have device profiles in all cases.
+            # So this is not an error.
+            return []
+
+        cyclient = cyborg.get_client()
+        dp_groups = cyclient.get_device_profile_groups(dp_name)
+
+        rr = cls()
+
+        for dp_group_id, dp_group in enumerate(dp_groups):
+            req_id = cyborg.get_device_profile_group_requester_id(dp_group_id)
+            rg = objects.RequestGroup(requester_id=req_id)
+            rg_ident = rr.add_request_group(rg)
+
+            for key, val in dp_group.items():
+                # Parse/validate resource/trait specs, ignore rest
+                cls._match_and_add_from_extra_specs(rr, key, val, rg_ident)
+
+        return rr._rg_by_id.values()
 
     @classmethod
     def from_image_props(cls, image_meta_props, req=None):
