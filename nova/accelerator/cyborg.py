@@ -97,3 +97,72 @@ class _CyborgClient(object):
             return []
 
         return dp_list[0]['groups']
+
+    def _create_arqs(self, dp_name):
+        if dp_name is None or dp_name == '':
+            raise RuntimeError('Device profile name is invalid %s' % dp_name)
+
+        url = self.ARQ_URL
+        data = {"device_profile_name": dp_name}
+        r = self._client.post(url, json=data)
+
+        if not r:
+            raise RuntimeError('Failed to get Cyborg accelerator requests')
+
+        return r.json().get('arqs')
+
+    def create_arqs_and_match_resource_providers(self, dp_name, req_groups):
+        """Create ARQs, match them with request groups and thereby
+          determine their corresponding RPs.
+
+        :param dp_name: Device profile name
+        :param req_groups: request groups in request_spec,
+             with the resource provider UUIDs set
+        :returns:
+            [arq], with each ARQ associated with an RP
+        """
+        LOG.info('DEMO: Creating ARQs for device profile %s', dp_name)
+        arqs = self._create_arqs(dp_name)
+        for arq in arqs:
+            dp_group_id = arq['device_profile_group_id']
+            arq['device_rp_uuid'] = None
+            dp_group_requester_id = (
+                get_device_profile_group_requester_id(dp_group_id))
+            for rg in req_groups:
+                if rg.requester_id == dp_group_requester_id:
+                    assert len(rg.provider_uuids) == 1
+                    arq['device_rp_uuid'] = rg.provider_uuids[0]
+            assert arq['device_rp_uuid'] is not None
+
+        return arqs
+
+    def bind_arqs(self, bindings):
+        """Initiate Cyborg bindings asynchronously.
+
+           Handles RFC 6902-compliant JSON patching, sparing
+           calling Nova code from those details.
+
+           :param bindings:
+               { "$arq_uuid": {
+                     "host_name": STRING
+                     "device_rp_uuid": UUID
+                     "instance_uuid": UUID
+                  },
+                  ...
+                }
+           :returns: nothing
+        """
+        LOG.info('DEMO: Binding ARQs. bindings = %s', bindings)
+        # Create a JSON patch in RFC 6902 format
+        patch_list = {}
+        for arq_uuid, binding in bindings.items():
+            patch = [{"path": "/" + field,
+                      "op": "add",
+                      "value": value
+                     } for field, value in binding.items()]
+            patch_list[arq_uuid] = patch
+
+        url = self.ARQ_URL
+        r = self._client.patch(url, json=patch_list)
+        if not r:
+            raise RuntimeError('Failed to bind Cyborg accelerator requests')

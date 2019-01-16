@@ -28,6 +28,7 @@ from oslo_utils import timeutils
 from oslo_utils import versionutils
 import six
 
+from nova.accelerator import cyborg
 from nova import availability_zones
 from nova.compute import instance_actions
 from nova.compute import rpcapi as compute_rpcapi
@@ -1334,6 +1335,37 @@ class ComputeTaskManager(base.Base):
         request_spec.map_requested_resources_to_providers(
             allocs, provider_traits)
 
+    def _create_and_bind_arqs(self, context, request_spec, host, instance):
+        """Create ARQs, determine their RPs and initiate asynchronous
+           Cyborg binding.
+
+           Should be called after the request groups in the req spec have
+           been matched with their resource providers, i.e., after
+           _fill_provider_mapping() has been called.
+        """
+        dp_name = request_spec.flavor.device_profile_name
+        if not dp_name:
+            LOG.info('No device profile in request.')
+            return
+
+        cyclient = cyborg.get_client()
+        arqs = cyclient.create_arqs_and_match_resource_providers(
+            dp_name, request_spec.requested_resources)
+
+        if arqs is not None and len(arqs) > 0:
+            bindings = {arq['uuid']:
+                           {"hostname": host.nodename,
+                            "device_rp_uuid": arq['device_rp_uuid'],
+                            "instance_uuid": instance.uuid
+                           }
+                        for arq in arqs}
+            # Initiate Cyborg binding asynchronously
+            cyclient.bind_arqs(bindings=bindings)
+        else:
+            # TODO(Sundar): Use CONF var to decide if this is fatal
+            LOG.warning('No ARQs were created for instance %s',
+                        instance.uuid)
+
     def schedule_and_build_instances(self, context, build_requests,
                                      request_specs, image,
                                      admin_password, injected_files,
@@ -1498,6 +1530,12 @@ class ComputeTaskManager(base.Base):
                 # the instance is gone and we don't have anything to build for
                 # this one.
                 continue
+
+            # At this point, each RG in request_spec has been assigned RP(s)
+            # via _fill_provider_mapping. Following call creates ARQs,
+            # matches them with an RG and thereby an RP, and then calls
+            # Cyborg to bind the ARQs.
+            self._create_and_bind_arqs(context, request_spec, host, instance)
 
             # NOTE(danms): Compute RPC expects security group names or ids
             # not objects, so convert this to a list of names until we can
