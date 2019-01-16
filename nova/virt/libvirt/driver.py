@@ -71,6 +71,7 @@ from oslo_utils import uuidutils
 import six
 from six.moves import range
 
+from nova.accelerator import cyborg
 from nova.api.metadata import base as instance_metadata
 from nova.api.metadata import password
 from nova import block_device
@@ -3200,10 +3201,20 @@ class LibvirtDriver(driver.ComputeDriver):
         # Does the guest need to be assigned some vGPU mediated devices ?
         mdevs = self._allocate_mdevs(allocations)
 
+        # Check if all accelerator requests are done.
+        arqs = None
+        if instance.flavor.device_profile_name is not None:
+            cyclient = cyborg.get_client()
+            try:
+                arqs = cyclient.get_resolved_arqs_for_instance(instance.uuid)
+            except Exception as e:
+                # TODO(Sundar) Use CONF var to decide if this is fatal.
+                LOG.warning("Cyborg returned error %s", e)
+
         xml = self._get_guest_xml(context, instance, network_info,
                                   disk_info, image_meta,
                                   block_device_info=block_device_info,
-                                  mdevs=mdevs)
+                                  mdevs=mdevs, arqs=arqs)
         self._create_domain_and_network(
             context, xml, instance, network_info,
             block_device_info=block_device_info,
@@ -4241,17 +4252,19 @@ class LibvirtDriver(driver.ComputeDriver):
 
         return sysinfo
 
+    def _set_managed_mode(self, pcidev):
+        # only kvm support managed mode
+        if CONF.libvirt.virt_type in ('xen', 'parallels',):
+            pcidev.managed = 'no'
+        if CONF.libvirt.virt_type in ('kvm', 'qemu'):
+            pcidev.managed = 'yes'
+
     def _get_guest_pci_device(self, pci_device):
 
         dbsf = pci_utils.parse_address(pci_device.address)
         dev = vconfig.LibvirtConfigGuestHostdevPCI()
         dev.domain, dev.bus, dev.slot, dev.function = dbsf
-
-        # only kvm support managed mode
-        if CONF.libvirt.virt_type in ('xen', 'parallels',):
-            dev.managed = 'no'
-        if CONF.libvirt.virt_type in ('kvm', 'qemu'):
-            dev.managed = 'yes'
+        self._set_managed_mode(dev)
 
         return dev
 
@@ -5263,7 +5276,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
     def _get_guest_config(self, instance, network_info, image_meta,
                           disk_info, rescue=None, block_device_info=None,
-                          context=None, mdevs=None):
+                          context=None, mdevs=None, arqs=None):
         """Get config data for parameters.
 
         :param rescue: optional dictionary that should contain the key
@@ -5379,6 +5392,12 @@ class LibvirtDriver(driver.ComputeDriver):
 
         self._guest_add_pci_devices(guest, instance)
 
+        if (arqs is not None and len(arqs) > 0 and
+                arqs[0]['attach_handle_type'] == 'PCI'):
+            # All ARQs are expected to have same handle type.
+            # So we check the first alone.
+            self._guest_add_accel_pci_devices(guest, arqs)
+
         self._guest_add_watchdog_action(guest, flavor, image_meta)
 
         self._guest_add_memory_balloon(guest)
@@ -5445,6 +5464,19 @@ class LibvirtDriver(driver.ComputeDriver):
             #  'xen', 'qemu' and 'kvm'.
             if pci_manager.get_instance_pci_devs(instance, 'all'):
                 raise exception.PciDeviceUnsupportedHypervisor(type=virt_type)
+
+    def _guest_add_accel_pci_devices(self, guest, arqs):
+        """Add all accelerator PCI functions from ARQ list."""
+        for arq in arqs:
+            assert arq['attach_handle_type'] == 'PCI'
+            dev = vconfig.LibvirtConfigGuestHostdevPCI()
+            pci_addr = arq['attach_handle_info']
+            dev.domain, dev.bus, dev.slot, dev.function = (
+                pci_addr['domain'], pci_addr['bus'],
+                pci_addr['device'], pci_addr['function'])
+            self._set_managed_mode(dev)
+
+            guest.add_device(dev)
 
     @staticmethod
     def _guest_add_video_device(guest):
@@ -5530,7 +5562,7 @@ class LibvirtDriver(driver.ComputeDriver):
     def _get_guest_xml(self, context, instance, network_info, disk_info,
                        image_meta, rescue=None,
                        block_device_info=None,
-                       mdevs=None):
+                       mdevs=None, arqs=None):
         # NOTE(danms): Stringifying a NetworkInfo will take a lock. Do
         # this ahead of time so that we don't acquire it while also
         # holding the logging lock.
@@ -5548,7 +5580,7 @@ class LibvirtDriver(driver.ComputeDriver):
         LOG.debug(strutils.mask_password(msg), instance=instance)
         conf = self._get_guest_config(instance, network_info, image_meta,
                                       disk_info, rescue, block_device_info,
-                                      context, mdevs)
+                                      context, mdevs, arqs)
         xml = conf.to_xml()
 
         LOG.debug('End _get_guest_xml xml=%(xml)s',
