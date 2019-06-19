@@ -17,6 +17,7 @@ from oslo_serialization import jsonutils
 from nova import utils
 
 import retrying
+import re
 
 """
    Note on object relationships:
@@ -68,6 +69,8 @@ class _CyborgClient(object):
 
     DEVICE_PROFILE_URL = "/device_profiles"
     ARQ_URL = "/accelerator_requests"
+    PCI_BUS_PATERN = re.compile(
+        "^[0-9a-fA-F]{4,4}:[0-9a-fA-F]{2,2}:[0-9a-fA-F]{2,2}.[0-9a-fA-F]$")
 
     def __init__(self):
         self._client = utils.get_ksa_adapter('accelerator')
@@ -108,6 +111,23 @@ class _CyborgClient(object):
         url = self.ARQ_URL
         data = {"device_profile_name": dp_name}
         r = self._client.post(url, json=data)
+
+        if not r:
+            raise RuntimeError('Failed to get Cyborg accelerator requests')
+
+        return r.json().get('arqs')
+
+    def delete_arqs(self, uuids):
+        if uuids is None or uuids == '':
+            raise RuntimeError('ARQ UUID is invalid')
+
+        url = self.ARQ_URL
+        if type(uuids) is list:
+            data = {"arqs": ",".join(uuids)}
+        else:
+            data = {"arqs": uuids}
+        #FIXME give right ARQ_URL
+        r = self._client.delete(url, json=data)
 
         if not r:
             raise RuntimeError('Failed to get Cyborg accelerator requests')
@@ -170,6 +190,37 @@ class _CyborgClient(object):
         if not r:
             raise RuntimeError('Failed to bind Cyborg accelerator requests')
 
+    def unbind_arqs(self, bindings):
+        """Initiate Cyborg bindings asynchronously.
+
+           Handles RFC 6902-compliant JSON patching, sparing
+           calling Nova code from those details.
+
+           :param bindings:
+               { "$arq_uuid": {
+                     "host_name": STRING
+                     "device_rp_uuid": UUID
+                     "instance_uuid": UUID
+                  },
+                  ...
+                }
+           :returns: nothing
+        """
+        LOG.info('DEMO: Binding ARQs. bindings = %s', bindings)
+        # Create a JSON patch in RFC 6902 format
+        patch_list = {}
+        for arq_uuid, binding in bindings.items():
+            # FIXME give the right "op"
+            patch = [{"path": "/" + field,
+                      "op": "remove",
+                     } for field, value in binding.items()]
+            patch_list[arq_uuid] = patch
+
+        url = self.ARQ_URL
+        r = self._client.patch(url, json=patch_list)
+        if not r:
+            raise RuntimeError('Failed to bind Cyborg accelerator requests')
+
     @retrying.retry(stop_max_attempt_number=10,
                     retry_on_exception=lambda e: isinstance(
                         e, RuntimeError))
@@ -200,7 +251,11 @@ class _CyborgClient(object):
         # Convert attach_info JSON to a dictonary.
         for arq in arqs:
             attach_json = arq['attach_handle_info']
-            attach_dict = jsonutils.loads(attach_json)
+            if self.PCI_BUS_PATERN.findall(attach_json):
+                attach_dict = dict(zip(["domain", "bus", "device", "function"],
+                                   attach_json.replace(".", ":").split(":")))
+            else:
+                attach_dict = jsonutils.loads(attach_json)
             arq['attach_handle_info'] = attach_dict
 
         return arqs

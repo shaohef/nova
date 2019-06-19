@@ -37,6 +37,7 @@ from oslo_utils import uuidutils
 import six
 from six.moves import range
 
+from nova.accelerator import cyborg
 from nova import availability_zones
 from nova import block_device
 from nova.cells import opts as cells_opts
@@ -2003,6 +2004,44 @@ class API(base.Base):
 
         return True
 
+    def _delete_and_unbind_arqs(self, context, instance):
+        """Create ARQs, determine their RPs and initiate asynchronous
+           Cyborg binding.
+
+           Should be called after the request groups in the req spec have
+           been matched with their resource providers, i.e., after
+           _fill_provider_mapping() has been called.
+        """
+        # import pdb; pdb.set_trace()
+        arqs = None
+        if instance.flavor.device_profile_name is not None:
+            cyclient = cyborg.get_client()
+            try:
+                arqs = cyclient.get_resolved_arqs_for_instance(instance.uuid)
+            except Exception as e:
+            # TODO(Sundar) Use CONF var to decide if this is fatal.
+                LOG.warning("Cyborg returned error %s", e)
+
+        if arqs is not None and len(arqs) > 0:
+            try:
+                bindings = {arq['uuid']:
+                               {"hostname": arq["hostname"],
+                                "device_rp_uuid": arq['device_rp_uuid'],
+                                "instance_uuid": arq["instance_uuid"]
+                               }
+                            for arq in arqs}
+                # Initiate Cyborg binding asynchronously
+                cyclient.unbind_arqs(bindings=bindings)
+                uuids = bindings.keys()
+                cyclient.delete_arqs(uuids)
+            except Exception as e:
+            # TODO(Sundar) Use CONF var to decide if this is fatal.
+                LOG.warning("Cyborg delete and unbind arqs failed. %s", e)
+        else:
+            # TODO(Sundar): Use CONF var to decide if this is fatal
+            LOG.warning('No ARQs were created for instance %s',
+                        instance.uuid)
+
     def _delete(self, context, instance, delete_type, cb, **instance_attrs):
         if instance.disable_terminate:
             LOG.info('instance termination disabled', instance=instance)
@@ -2052,6 +2091,8 @@ class API(base.Base):
                 if not instance:
                     # Instance is already deleted
                     return
+
+        self._delete_and_unbind_arqs(context, instance)
 
         bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                 context, instance.uuid)
