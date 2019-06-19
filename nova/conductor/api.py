@@ -125,6 +125,9 @@ class ComputeTaskAPI(object):
                 legacy_bdm=legacy_bdm, request_spec=request_spec,
                 host_lists=host_lists)
 
+    def delete_and_unbind_arqs(self, context, instance):
+        self.conductor_compute_rpcapi.delete_and_unbind_arqs(context, instance)
+
     def schedule_and_build_instances(self, context, build_requests,
                                      request_spec, image,
                                      admin_password, injected_files,

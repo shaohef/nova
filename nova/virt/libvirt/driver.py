@@ -3201,16 +3201,7 @@ class LibvirtDriver(driver.ComputeDriver):
         # Does the guest need to be assigned some vGPU mediated devices ?
         mdevs = self._allocate_mdevs(allocations)
 
-        # Check if all accelerator requests are done.
-        arqs = None
-        if instance.flavor.device_profile_name is not None:
-            cyclient = cyborg.get_client()
-            try:
-                arqs = cyclient.get_resolved_arqs_for_instance(instance.uuid)
-            except Exception as e:
-                # TODO(Sundar) Use CONF var to decide if this is fatal.
-                LOG.warning("Cyborg returned error %s", e)
-
+        arqs = self._get_arqs(instance)
         xml = self._get_guest_xml(context, instance, network_info,
                                   disk_info, image_meta,
                                   block_device_info=block_device_info,
@@ -5559,6 +5550,19 @@ class LibvirtDriver(driver.ComputeDriver):
                     model="usbtablet")
         return tablet
 
+    def _get_arqs(self, instance):
+        # Check if all accelerator requests are done.
+        arqs = None
+        # import pdb; pdb.set_trace()
+        if instance.flavor.device_profile_name is not None:
+            cyclient = cyborg.get_client()
+            try:
+                arqs = cyclient.get_resolved_arqs_for_instance(instance.uuid)
+            except Exception as e:
+                # TODO(Sundar) Use CONF var to decide if this is fatal.
+                LOG.warning("Cyborg returned error %s", e)
+        return arqs
+
     def _get_guest_xml(self, context, instance, network_info, disk_info,
                        image_meta, rescue=None,
                        block_device_info=None,
@@ -5566,6 +5570,8 @@ class LibvirtDriver(driver.ComputeDriver):
         # NOTE(danms): Stringifying a NetworkInfo will take a lock. Do
         # this ahead of time so that we don't acquire it while also
         # holding the logging lock.
+        # import pdb; pdb.set_trace()
+        arqs = arqs or self._get_arqs(instance)
         network_info_str = str(network_info)
         msg = ('Start _get_guest_xml '
                'network_info=%(network_info)s '

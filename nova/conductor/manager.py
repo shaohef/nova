@@ -1366,6 +1366,43 @@ class ComputeTaskManager(base.Base):
             LOG.warning('No ARQs were created for instance %s',
                         instance.uuid)
 
+    def delete_and_unbind_arqs(self, context, instance):
+        """Create ARQs, determine their RPs and initiate asynchronous
+           Cyborg binding.
+
+           Should be called after the request groups in the req spec have
+           been matched with their resource providers, i.e., after
+           _fill_provider_mapping() has been called.
+        """
+        arqs = None
+        if instance.flavor.device_profile_name is not None:
+            cyclient = cyborg.get_client()
+            try:
+                arqs = cyclient.get_resolved_arqs_for_instance(instance.uuid)
+            except Exception as e:
+            # TODO(Sundar) Use CONF var to decide if this is fatal.
+                LOG.warning("Cyborg returned error %s", e)
+
+        if arqs is not None and len(arqs) > 0:
+            try:
+                bindings = {arq['uuid']:
+                               {"hostname": host.nodename,
+                                "device_rp_uuid": arq['device_rp_uuid'],
+                                "instance_uuid": instance.uuid
+                               }
+                            for arq in arqs}
+                # Initiate Cyborg binding asynchronously
+                cyclient.unbind_arqs(bindings=bindings)
+                uuids = bindings.keys()
+                cyclient.unbind_arqs(uuids)
+            except Exception as e:
+            # TODO(Sundar) Use CONF var to decide if this is fatal.
+                LOG.warning("Cyborg delete and unbind arqs failed. %s", e)
+        else:
+            # TODO(Sundar): Use CONF var to decide if this is fatal
+            LOG.warning('No ARQs were created for instance %s',
+                        instance.uuid)
+
     def schedule_and_build_instances(self, context, build_requests,
                                      request_specs, image,
                                      admin_password, injected_files,

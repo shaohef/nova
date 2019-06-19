@@ -2004,6 +2004,7 @@ class API(base.Base):
         return True
 
     def _delete(self, context, instance, delete_type, cb, **instance_attrs):
+        import ipdb; ipdb.set_trace()
         if instance.disable_terminate:
             LOG.info('instance termination disabled', instance=instance)
             return
@@ -2052,6 +2053,8 @@ class API(base.Base):
                 if not instance:
                     # Instance is already deleted
                     return
+
+        self.compute_task_api.delete_and_unbind_arqs(context, instance)
 
         bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                 context, instance.uuid)
