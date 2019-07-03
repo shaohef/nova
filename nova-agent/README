@@ -1,0 +1,1 @@
+1. make sure enable VT and add "intel_iommu=on" to linux command prama
